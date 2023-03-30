@@ -1,7 +1,7 @@
 # aurora_serverless_v2_savings_calculator
 Estimate potential savings from migrating qualifying databases in your current RDS fleet in the currently defined region to Aurora Serverless V2
 
-This Jupyter notebook attempts to estimate the potential savings that you can get by migrating qualifying databases in your current RDS fleet (in the current active region) to Aurora Serverless V2.  Note that the usual Python suspects (pandas, numpy, Jupyter) plus the boto3 library must be present, and the AWS environment set up properly (access key, secret key, and region are set via "aws cli").
+This Jupyter notebook attempts to estimate the potential savings that you can get by migrating qualifying databases in your current RDS fleet (in the current active region) to Aurora Serverless V2.  Note that the usual Python suspects (pandas, numpy, Jupyter) plus the boto3 library must be present, and the AWS environment set up properly (access key, secret key, and region are set via "aws configure").
 
 The notebook performs the following steps:
 
