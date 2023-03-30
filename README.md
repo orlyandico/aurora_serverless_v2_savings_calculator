@@ -12,8 +12,8 @@ The notebook performs the following steps:
 - calculate the mean CPU usage, and mean IOPS (Read + Write); IOPS is only available for RDS EBS engines (long version: IOPS are only available at cluster level for Aurora databases, and any IOPS on Aurora Provisioned vs Serverless would be the same and so would cancel out)
 - merges the database dataframe and cloudwatch dataframe
 - calculates the equivalent average ACU using the formula (cpu percentage usage / 100) * vCPU * 4 (based on the rule of thumb that 1 vCPU = 4 ACU)
-- calculates the monthly cost for that average ACU, using a hard-wired ACU pricing table (FIXME)
-- calculates the cost of Aurora IOPS based on the Read+Write IOPS average multiplied by seconds per month
+- calculates the monthly cost for that average ACU, using the pricing API (currently hardwired to use Aurora PostgreSQL ACU, which is the same as Aurora MySQL ACU so this is OK for now)
+- calculates the cost of Aurora IOPS based on the Read+Write IOPS average multiplied by seconds per month, also fetching IOPS cost via pricing API
 - estimates the "potential savings" inclusive of IOPS cost
 - writes a CSV file with the results
 
