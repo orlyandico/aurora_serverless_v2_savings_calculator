@@ -3,7 +3,7 @@ Estimate potential savings from migrating qualifying databases in your current R
 
 This script attempts to estimate the potential savings that you can get by migrating qualifying databases in your current RDS fleet (in the current active region) to Aurora Serverless V2.  Note that the usual Python suspects (pandas, numpy, Jupyter) plus the boto3 library must be present, and the AWS environment set up properly (access key, secret key, and region are set via "aws configure").
 
-The notebook performs the following steps:
+The script performs the following steps:
 
 - describe all RDS instances in the current region; note that ServerlessV2 databases have an instance type of "db.serverless" and ServerlessV1 databases don't appear at all in the describe_db_instances() call
 - remove all ServerlessV2 and non (MySQL, PostgreSQL) databases from the list
@@ -16,4 +16,3 @@ The notebook performs the following steps:
 - calculates the cost of Aurora IOPS based on the Read+Write IOPS average multiplied by seconds per month, also fetching IOPS cost via pricing API
 - estimates the "potential savings" inclusive of IOPS cost
 - writes a CSV file with the results
-
