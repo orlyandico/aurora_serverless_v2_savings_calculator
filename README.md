@@ -1,20 +1,105 @@
 # Aurora Serverless v2 Savings Calculator
-Estimate potential savings from migrating qualifying databases in your current RDS fleet in the currently defined region to Aurora Serverless V2
+
+Estimate potential savings from migrating qualifying databases across all AWS regions to Aurora Serverless V2, comparing Standard, I/O-Optimized, and Savings Plan pricing.
 
 **REQUIRES Python packages: boto3, pandas, numpy**
 
-This script attempts to estimate the potential savings that you can get by migrating qualifying databases in your current RDS fleet (in the current active region) to Aurora Serverless V2.  Note that the usual Python suspects (pandas, numpy, Jupyter) plus the boto3 library must be present, and the AWS environment set up properly (access key, secret key, and region are set via "aws configure").
+## Features
+
+- **Multi-region analysis**: Automatically queries all AWS regions with RDS availability
+- **Multiple pricing models**: Compares three Aurora Serverless v2 configurations:
+  - Standard (with I/O charges)
+  - I/O-Optimized (no I/O charges, higher ACU cost)
+  - Savings Plan (35% discount on ACU, 1-year commitment)
+- **Comprehensive cost analysis**: Identifies the best option for each database
+- **CloudWatch metrics**: Uses 14 days of CPU and IOPS data for accurate projections
+
+## How It Works
 
 The script performs the following steps:
 
-- describe all RDS instances in the current region; note that ServerlessV2 databases have an instance type of "db.serverless" and ServerlessV1 databases don't appear at all in the describe_db_instances() call
-- remove all ServerlessV2 and non (MySQL, PostgreSQL) databases from the list
-- get the hourly price and specs (vCPU, memory) for each remaining database
-- fetch the last 2 weeks worth of CPU, Read IOPS, and Write IOPS usage data from Cloudwatch for each database,  using the "maximum" parameter, this is in percent
-- calculate the mean CPU usage, and mean IOPS (Read + Write); IOPS is only available for RDS EBS engines (long version: IOPS are only available at cluster level for Aurora databases, and any IOPS on Aurora Provisioned vs Serverless would be the same and so would cancel out)
-- merges the database dataframe and cloudwatch dataframe
-- calculates the equivalent average ACU using the formula (cpu percentage usage / 100) * vCPU * 4 (based on the rule of thumb that 1 vCPU = 4 ACU)
-- calculates the monthly cost for that average ACU, using the pricing API (currently hardwired to use Aurora PostgreSQL ACU, which is the same as Aurora MySQL ACU so this is OK for now)
-- calculates the cost of Aurora IOPS based on the Read+Write IOPS average multiplied by seconds per month, also fetching IOPS cost via pricing API
-- estimates the "potential savings" inclusive of IOPS cost
-- writes a CSV file with the results
+1. Discovers all AWS regions with RDS availability
+2. For each region:
+   - Describes all RDS instances (excludes ServerlessV2 and non-MySQL/PostgreSQL databases)
+   - Fetches hourly pricing and specs (vCPU, memory) for each instance
+   - Retrieves 14 days of CPU and IOPS metrics from CloudWatch
+   - Calculates equivalent ACU usage: `(CPU% / 100) × vCPU × 4`
+   - Computes monthly costs for all three Aurora Serverless v2 configurations
+3. Combines results across all regions
+4. Identifies the best pricing option for each database
+5. Generates comprehensive CSV report with savings analysis
+
+## Pricing Models Compared
+
+### Standard
+- ACU: On-demand hourly rate
+- I/O: $0.20 per million requests (region-dependent)
+- Best for: Low I/O workloads
+
+### I/O-Optimized
+- ACU: Higher hourly rate (~25% more than Standard)
+- I/O: No charges
+- Best for: High I/O workloads (>15% of compute cost)
+
+### Savings Plan
+- ACU: 35% discount on Standard rate
+- I/O: Same as Standard ($0.20 per million requests)
+- Commitment: 1-year, $/hour commitment
+- Best for: Predictable workloads with cost optimization priority
+
+## Usage
+
+```bash
+python3 aurora_serverlessv2_savings_calculator.py
+```
+
+Requires AWS credentials configured via `aws configure` with permissions for:
+- `rds:DescribeDBInstances` (all regions)
+- `cloudwatch:GetMetricStatistics` (all regions)
+- `pricing:GetProducts` (us-east-1)
+- `ec2:DescribeRegions`
+
+## Output
+
+CSV file: `aurora_serverless_analysis_YYYYMMDD_HHMMSS.csv`
+
+Columns include:
+- Instance details (ID, class, engine, region)
+- Current pricing (hourly, monthly)
+- CloudWatch metrics (CPU, IOPS)
+- ACU usage calculation
+- Monthly costs for all three options
+- Savings for each option
+- Best option recommendation
+- Maximum potential savings
+
+Console summary shows:
+- Total instances analyzed
+- Regions with instances
+- Current monthly cost
+- Potential savings by option
+- Best option distribution
+
+## Version Compatibility
+
+The script identifies instances requiring engine upgrades for Serverless v2 compatibility:
+
+**Aurora MySQL:**
+- Requires: Version 3.x
+- Extended support: Version 2.x (MySQL 5.7)
+
+**Aurora PostgreSQL:**
+- Requires: 13.6+, 14.3+, or 15.2+
+- Extended support: Versions 11, 12, 13
+
+Instances flagged with `NeedsUpgrade=True` or `ExtendedSupport=True` require migration planning.
+
+## Notes
+
+- Assumes 1 ACU = 0.25 vCPU (4 ACU per vCPU)
+- Uses maximum CPU/IOPS from CloudWatch with 1.5x multiplier for headroom
+- Assumes all instances are On-Demand (doesn't factor in existing Reserved Instances)
+- IOPS metrics only available for RDS EBS engines (MySQL, PostgreSQL)
+- Aurora instances: IOPS are cluster-level and identical between provisioned and serverless
+- Multi-AZ deployments: ACU costs doubled (2x writer + reader)
+- Savings Plan discount: 35% applied to ACU costs only
