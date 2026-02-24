@@ -34,6 +34,17 @@ HOURS_PER_MONTH = 730         # Average hours per month
 SECONDS_PER_MONTH = 2628000   # 730 hours * 3600 seconds
 ACU_PER_VCPU = 4              # 1 ACU = 0.25 vCPU
 
+# Version compatibility thresholds (hardcoded - update as AWS requirements change)
+AURORA_MYSQL_MIN_VERSION = '3.'           # Requires 3.x for Serverless v2
+AURORA_MYSQL_EXTENDED_SUPPORT = '2.'      # 2.x (MySQL 5.7) in extended support
+
+AURORA_POSTGRESQL_MIN_VERSIONS = {        # Minimum minor versions per major
+    '13': '13.6',
+    '14': '14.3',
+    '15': '15.2'
+}
+AURORA_POSTGRESQL_EXTENDED_SUPPORT = [11, 12, 13]  # Major versions in extended support
+
 def get_all_rds_regions() -> List[str]:
     """
     Get all AWS regions where RDS is available.
@@ -226,16 +237,21 @@ def create_instance_dataframe(instances: list) -> pd.DataFrame:
         extended_support = False
         
         if engine == 'aurora-mysql':
-            needs_upgrade = not version.startswith('3.')
-            # Aurora MySQL 2.x (MySQL 5.7) entered extended support
-            if version.startswith('2.'):
+            needs_upgrade = not version.startswith(AURORA_MYSQL_MIN_VERSION)
+            if version.startswith(AURORA_MYSQL_EXTENDED_SUPPORT):
                 extended_support = True
         elif engine == 'aurora-postgresql':
-            major_minor = '.'.join(version.split('.')[:2])
-            needs_upgrade = major_minor < '13.6' or (major_minor.startswith('14.') and major_minor < '14.3') or (major_minor.startswith('15.') and major_minor < '15.2')
-            # PostgreSQL 11, 12, and 13 are in or entering extended support
             major = int(version.split('.')[0])
-            if major <= 13:
+            major_minor = '.'.join(version.split('.')[:2])
+            
+            # Check minimum version requirements
+            if str(major) in AURORA_POSTGRESQL_MIN_VERSIONS:
+                needs_upgrade = major_minor < AURORA_POSTGRESQL_MIN_VERSIONS[str(major)]
+            else:
+                needs_upgrade = True  # Major version not in supported list
+            
+            # Check extended support
+            if major in AURORA_POSTGRESQL_EXTENDED_SUPPORT:
                 extended_support = True
         
         instance_data = {

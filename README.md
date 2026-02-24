@@ -94,6 +94,12 @@ The script identifies instances requiring engine upgrades for Serverless v2 comp
 
 Instances flagged with `NeedsUpgrade=True` or `ExtendedSupport=True` require migration planning.
 
+**Hardcoded version thresholds:** Update constants at top of script as AWS requirements change:
+- `AURORA_MYSQL_MIN_VERSION`
+- `AURORA_MYSQL_EXTENDED_SUPPORT`
+- `AURORA_POSTGRESQL_MIN_VERSIONS`
+- `AURORA_POSTGRESQL_EXTENDED_SUPPORT`
+
 ## Notes
 
 - Assumes 1 ACU = 0.25 vCPU (4 ACU per vCPU)
@@ -103,3 +109,4 @@ Instances flagged with `NeedsUpgrade=True` or `ExtendedSupport=True` require mig
 - Aurora instances: IOPS are cluster-level and identical between provisioned and serverless
 - Multi-AZ deployments: ACU costs doubled (2x writer + reader)
 - Savings Plan discount: 35% applied to ACU costs only
+- Storage costs included: Standard vs I/O-Optimized pricing (I/O-Optimized ~15-20% higher per GB)
