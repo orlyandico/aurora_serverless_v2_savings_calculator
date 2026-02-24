@@ -46,9 +46,9 @@ def get_all_rds_regions() -> List[str]:
     return [region['RegionName'] for region in regions['Regions']]
 
 def get_aurora_serverless_pricing(region_name: str, database_engine: str, 
-                                 storage_type: str = 'standard') -> Tuple[float, float, float]:
+                                 storage_type: str = 'standard') -> Tuple[float, float, float, float]:
     """
-    Get ACU, IOPS, and Savings Plan pricing for Aurora MySQL/PostgreSQL.
+    Get ACU, IOPS, storage, and Savings Plan pricing for Aurora MySQL/PostgreSQL.
     
     Args:
         region_name: AWS region name
@@ -56,9 +56,32 @@ def get_aurora_serverless_pricing(region_name: str, database_engine: str,
         storage_type: Either 'standard' or 'io-optimized'
         
     Returns:
-        Tuple of (ACU price, IOPS price, Savings Plan ACU price)
+        Tuple of (ACU price, IOPS price, Savings Plan ACU price, Storage price per GB)
     """
     pricing_client = boto3.client('pricing', region_name='us-east-1')
+
+    # Get storage cost
+    storage_filters = [
+        {'Type': 'TERM_MATCH', 'Field': 'regionCode', 'Value': region_name},
+        {'Type': 'TERM_MATCH', 'Field': 'productFamily', 'Value': 'Database Storage'},
+        {'Type': 'TERM_MATCH', 'Field': 'databaseEngine', 'Value': database_engine},
+        {'Type': 'TERM_MATCH', 'Field': 'deploymentOption', 'Value': 'Serverless'}
+    ]
+    
+    if storage_type == 'io-optimized':
+        storage_filters.append({'Type': 'TERM_MATCH', 'Field': 'storageConfiguration', 'Value': 'Aurora I/O-Optimized'})
+    
+    price_storage = 0.0
+    try:
+        storage_response = pricing_client.get_products(ServiceCode='AmazonRDS', Filters=storage_filters, MaxResults=1)
+        if storage_response['PriceList']:
+            storage_pricing = json.loads(storage_response['PriceList'][0])
+            storage_terms = storage_pricing['terms']['OnDemand']
+            storage_id1 = list(storage_terms)[0]
+            storage_id2 = list(storage_terms[storage_id1]['priceDimensions'])[0]
+            price_storage = float(storage_terms[storage_id1]['priceDimensions'][storage_id2]['pricePerUnit']['USD'])
+    except Exception as e:
+        print(f"Warning: Could not get storage pricing for {region_name}: {e}")
 
     # Get IO operation cost (only for standard storage)
     price_iops = 0.0
@@ -94,7 +117,7 @@ def get_aurora_serverless_pricing(region_name: str, database_engine: str,
     try:
         acu_response = pricing_client.get_products(ServiceCode='AmazonRDS', Filters=acu_filters, MaxResults=1)
         if not acu_response['PriceList']:
-            return 0.0, 0.0, 0.0
+            return 0.0, 0.0, 0.0, 0.0
             
         acu_pricing = json.loads(acu_response['PriceList'][0])
         
@@ -107,10 +130,10 @@ def get_aurora_serverless_pricing(region_name: str, database_engine: str,
         # Get Savings Plan pricing (35% discount)
         price_acu_sp = price_acu * (1 - SAVINGS_PLAN_DISCOUNT)
         
-        return price_acu, price_iops, price_acu_sp
+        return price_acu, price_iops, price_acu_sp, price_storage
     except Exception as e:
         print(f"Warning: Could not get ACU pricing for {region_name}, {database_engine}, {storage_type}: {e}")
-        return 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0
 
 def get_rds_instance_hourly_price(region_name: str, instance_type: str, 
                                 database_engine: str, deployment_option: str) -> Dict[str, Any]:
@@ -273,13 +296,13 @@ def process_region(region: str) -> pd.DataFrame:
         
         for engine in ['Aurora MySQL', 'Aurora PostgreSQL']:
             # Standard pricing
-            acu_std, iops_std, acu_sp = get_aurora_serverless_pricing(region, engine, 'standard')
-            pricing_configs['standard'][engine] = {'acu': acu_std, 'iops': iops_std}
-            pricing_configs['savings_plan'][engine] = {'acu': acu_sp, 'iops': iops_std}
+            acu_std, iops_std, acu_sp, storage_std = get_aurora_serverless_pricing(region, engine, 'standard')
+            pricing_configs['standard'][engine] = {'acu': acu_std, 'iops': iops_std, 'storage': storage_std}
+            pricing_configs['savings_plan'][engine] = {'acu': acu_sp, 'iops': iops_std, 'storage': storage_std}
             
             # I/O-Optimized pricing
-            acu_io, _, acu_io_sp = get_aurora_serverless_pricing(region, engine, 'io-optimized')
-            pricing_configs['io_optimized'][engine] = {'acu': acu_io, 'iops': 0.0}
+            acu_io, _, acu_io_sp, storage_io = get_aurora_serverless_pricing(region, engine, 'io-optimized')
+            pricing_configs['io_optimized'][engine] = {'acu': acu_io, 'iops': 0.0, 'storage': storage_io}
         
         # Get instance pricing and details
         for idx, row in df.iterrows():
@@ -363,23 +386,27 @@ def process_region(region: str) -> pd.DataFrame:
         for idx, row in df.iterrows():
             aurora_engine = 'Aurora MySQL' if 'mysql' in row['Engine'] else 'Aurora PostgreSQL'
             multi_az_multiplier = 2 if row['deploymentOption'] == 'Multi-AZ' else 1
+            storage_gb = row['AllocatedStorage']
             
             # Standard
             std_pricing = pricing_configs['standard'][aurora_engine]
             acu_cost_std = row['acu_usage'] * std_pricing['acu'] * HOURS_PER_MONTH * multi_az_multiplier
             iops_cost_std = (row['IOPS'] * SECONDS_PER_MONTH) * std_pricing['iops']
-            df.loc[idx, 'aurora_standard_monthly'] = acu_cost_std + iops_cost_std
+            storage_cost_std = storage_gb * std_pricing['storage']
+            df.loc[idx, 'aurora_standard_monthly'] = acu_cost_std + iops_cost_std + storage_cost_std
             
             # I/O-Optimized
             io_pricing = pricing_configs['io_optimized'][aurora_engine]
             acu_cost_io = row['acu_usage'] * io_pricing['acu'] * HOURS_PER_MONTH * multi_az_multiplier
-            df.loc[idx, 'aurora_io_optimized_monthly'] = acu_cost_io
+            storage_cost_io = storage_gb * io_pricing['storage']
+            df.loc[idx, 'aurora_io_optimized_monthly'] = acu_cost_io + storage_cost_io
             
             # Savings Plan
             sp_pricing = pricing_configs['savings_plan'][aurora_engine]
             acu_cost_sp = row['acu_usage'] * sp_pricing['acu'] * HOURS_PER_MONTH * multi_az_multiplier
             iops_cost_sp = (row['IOPS'] * SECONDS_PER_MONTH) * sp_pricing['iops']
-            df.loc[idx, 'aurora_savings_plan_monthly'] = acu_cost_sp + iops_cost_sp
+            storage_cost_sp = storage_gb * sp_pricing['storage']
+            df.loc[idx, 'aurora_savings_plan_monthly'] = acu_cost_sp + iops_cost_sp + storage_cost_sp
         
         # Calculate savings
         df['savings_standard'] = df['pricePerMonth'] - df['aurora_standard_monthly']
