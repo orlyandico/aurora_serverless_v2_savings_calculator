@@ -41,7 +41,9 @@ AURORA_MYSQL_EXTENDED_SUPPORT = '2.'      # 2.x (MySQL 5.7) in extended support
 AURORA_POSTGRESQL_MIN_VERSIONS = {        # Minimum minor versions per major
     '13': '13.6',
     '14': '14.3',
-    '15': '15.2'
+    '15': '15.2',
+    '16': '16.0',
+    '17': '17.0'
 }
 AURORA_POSTGRESQL_EXTENDED_SUPPORT = [11, 12, 13]  # Major versions in extended support
 
@@ -121,16 +123,25 @@ def get_aurora_serverless_pricing(region_name: str, database_engine: str,
         {'Type': 'TERM_MATCH', 'Field': 'productFamily', 'Value': 'ServerlessV2'}
     ]
     
-    # Add storage configuration filter for I/O-Optimized
-    if storage_type == 'io-optimized':
-        acu_filters.append({'Type': 'TERM_MATCH', 'Field': 'storageConfiguration', 'Value': 'Aurora I/O-Optimized'})
-    
     try:
-        acu_response = pricing_client.get_products(ServiceCode='AmazonRDS', Filters=acu_filters, MaxResults=1)
+        acu_response = pricing_client.get_products(ServiceCode='AmazonRDS', Filters=acu_filters, MaxResults=10)
         if not acu_response['PriceList']:
+            print(f"  WARNING: No pricing data returned for {database_engine} {storage_type}")
             return 0.0, 0.0, 0.0, 0.0
-            
-        acu_pricing = json.loads(acu_response['PriceList'][0])
+        
+        # Filter results by usagetype to distinguish standard vs I/O-Optimized
+        target_usage = 'ServerlessV2IOOptimizedUsage' if storage_type == 'io-optimized' else 'ServerlessV2Usage'
+        
+        acu_pricing = None
+        for price_item in acu_response['PriceList']:
+            item = json.loads(price_item)
+            if target_usage in item['product']['attributes'].get('usagetype', ''):
+                acu_pricing = item
+                break
+        
+        if not acu_pricing:
+            print(f"  WARNING: No {storage_type} pricing found in results for {database_engine}")
+            return 0.0, 0.0, 0.0, 0.0
         
         # Get On-Demand pricing
         acu_terms = acu_pricing['terms']['OnDemand']
@@ -288,7 +299,7 @@ def process_region(region: str) -> pd.DataFrame:
         
         # Get RDS instances
         response = rds_client.describe_db_instances()
-        required_engines = ['aurora-mysql', 'mysql', 'aurora-postgresql', 'postgresql']
+        required_engines = ['aurora-mysql', 'mysql', 'aurora-postgresql', 'postgres', 'postgresql']
         instances = [db for db in response['DBInstances'] 
                     if db['Engine'] in required_engines 
                     and db['DBInstanceClass'] not in ['db.serverless']]
@@ -307,18 +318,20 @@ def process_region(region: str) -> pd.DataFrame:
         pricing_configs = {
             'standard': {},
             'io_optimized': {},
-            'savings_plan': {}
+            'standard_sp': {},
+            'io_optimized_sp': {}
         }
         
         for engine in ['Aurora MySQL', 'Aurora PostgreSQL']:
             # Standard pricing
             acu_std, iops_std, acu_sp, storage_std = get_aurora_serverless_pricing(region, engine, 'standard')
             pricing_configs['standard'][engine] = {'acu': acu_std, 'iops': iops_std, 'storage': storage_std}
-            pricing_configs['savings_plan'][engine] = {'acu': acu_sp, 'iops': iops_std, 'storage': storage_std}
+            pricing_configs['standard_sp'][engine] = {'acu': acu_sp, 'iops': iops_std, 'storage': storage_std}
             
             # I/O-Optimized pricing
             acu_io, _, acu_io_sp, storage_io = get_aurora_serverless_pricing(region, engine, 'io-optimized')
             pricing_configs['io_optimized'][engine] = {'acu': acu_io, 'iops': 0.0, 'storage': storage_io}
+            pricing_configs['io_optimized_sp'][engine] = {'acu': acu_io_sp, 'iops': 0.0, 'storage': storage_io}
         
         # Get instance pricing and details
         for idx, row in df.iterrows():
@@ -379,9 +392,14 @@ def process_region(region: str) -> pd.DataFrame:
                 read_iops_df = get_cloudwatch_metrics(cw_client, db_id, 'ReadIOPS', start_time, end_time)
                 write_iops_df = get_cloudwatch_metrics(cw_client, db_id, 'WriteIOPS', start_time, end_time)
                 
+                # Calculate average IOPS over the measurement period
+                # IOPS metrics are already per-second rates, so we average them
+                mean_read = read_iops_df['Maximum'].mean() if not read_iops_df.empty else 0
+                mean_write = write_iops_df['Maximum'].mean() if not write_iops_df.empty else 0
+                
                 metrics[-1].update({
-                    'meanReadIOPS': read_iops_df['Maximum'].mean() if not read_iops_df.empty else 0,
-                    'meanWriteIOPS': write_iops_df['Maximum'].mean() if not write_iops_df.empty else 0
+                    'meanReadIOPS': mean_read,
+                    'meanWriteIOPS': mean_write
                 })
             else:
                 metrics[-1].update({
@@ -392,11 +410,41 @@ def process_region(region: str) -> pd.DataFrame:
         metrics_df = pd.DataFrame(metrics)
         df = pd.merge(df, metrics_df, on='DBInstanceIdentifier', how='left')
         
+        # Fix Aurora storage - fetch from cluster VolumeBytesUsed
+        for idx, row in df.iterrows():
+            if row['Engine'] in ['aurora-mysql', 'aurora-postgresql']:
+                try:
+                    # Get cluster identifier from instance
+                    instance_details = rds_client.describe_db_instances(DBInstanceIdentifier=row['DBInstanceIdentifier'])
+                    cluster_id = instance_details['DBInstances'][0].get('DBClusterIdentifier')
+                    
+                    if cluster_id:
+                        # Get storage from CloudWatch
+                        storage_stats = cw_client.get_metric_statistics(
+                            Namespace='AWS/RDS',
+                            Dimensions=[{'Name': 'DBClusterIdentifier', 'Value': cluster_id}],
+                            MetricName='VolumeBytesUsed',
+                            StartTime=start_time,
+                            EndTime=end_time,
+                            Period=3600,
+                            Statistics=['Average']
+                        )
+                        if storage_stats['Datapoints']:
+                            # Convert bytes to GB
+                            storage_gb = storage_stats['Datapoints'][-1]['Average'] / (1024**3)
+                            df.loc[idx, 'AllocatedStorage'] = int(storage_gb)
+                except Exception as e:
+                    print(f"  Warning: Could not get Aurora storage for {row['DBInstanceIdentifier']}: {e}")
+        
         # Calculate Aurora Serverless costs for all configurations
         # ACU usage = (CPU% / 100) × vCPU × ACU_PER_VCPU × HEADROOM_MULTIPLIER
+        # Minimum 0.5 ACU for Aurora Serverless v2
         df['acu_usage'] = df['meanCPU'].fillna(0) * HEADROOM_MULTIPLIER * df['vcpu'] * ACU_PER_VCPU / 100
-        df['acu_usage'] = df['acu_usage'].apply(np.floor) + 0.5
-        df['IOPS'] = (df['meanReadIOPS'].fillna(0) + df['meanWriteIOPS'].fillna(0)) * HEADROOM_MULTIPLIER
+        df['acu_usage'] = df['acu_usage'].apply(lambda x: max(0.5, np.floor(x) + 0.5))
+        
+        # IOPS calculation: meanIOPS is already operations per second
+        # Total monthly operations = IOPS × seconds per month × headroom
+        df['monthly_io_operations'] = (df['meanReadIOPS'].fillna(0) + df['meanWriteIOPS'].fillna(0)) * SECONDS_PER_MONTH * HEADROOM_MULTIPLIER
         
         # Calculate costs for each configuration
         for idx, row in df.iterrows():
@@ -407,9 +455,16 @@ def process_region(region: str) -> pd.DataFrame:
             # Standard
             std_pricing = pricing_configs['standard'][aurora_engine]
             acu_cost_std = row['acu_usage'] * std_pricing['acu'] * HOURS_PER_MONTH * multi_az_multiplier
-            iops_cost_std = (row['IOPS'] * SECONDS_PER_MONTH) * std_pricing['iops']
+            iops_cost_std = row['monthly_io_operations'] * std_pricing['iops']
             storage_cost_std = storage_gb * std_pricing['storage']
             df.loc[idx, 'aurora_standard_monthly'] = acu_cost_std + iops_cost_std + storage_cost_std
+            
+            # Standard + Savings Plan
+            std_sp_pricing = pricing_configs['standard_sp'][aurora_engine]
+            acu_cost_std_sp = row['acu_usage'] * std_sp_pricing['acu'] * HOURS_PER_MONTH * multi_az_multiplier
+            iops_cost_std_sp = row['monthly_io_operations'] * std_sp_pricing['iops']
+            storage_cost_std_sp = storage_gb * std_sp_pricing['storage']
+            df.loc[idx, 'aurora_standard_sp_monthly'] = acu_cost_std_sp + iops_cost_std_sp + storage_cost_std_sp
             
             # I/O-Optimized
             io_pricing = pricing_configs['io_optimized'][aurora_engine]
@@ -417,23 +472,24 @@ def process_region(region: str) -> pd.DataFrame:
             storage_cost_io = storage_gb * io_pricing['storage']
             df.loc[idx, 'aurora_io_optimized_monthly'] = acu_cost_io + storage_cost_io
             
-            # Savings Plan
-            sp_pricing = pricing_configs['savings_plan'][aurora_engine]
-            acu_cost_sp = row['acu_usage'] * sp_pricing['acu'] * HOURS_PER_MONTH * multi_az_multiplier
-            iops_cost_sp = (row['IOPS'] * SECONDS_PER_MONTH) * sp_pricing['iops']
-            storage_cost_sp = storage_gb * sp_pricing['storage']
-            df.loc[idx, 'aurora_savings_plan_monthly'] = acu_cost_sp + iops_cost_sp + storage_cost_sp
+            # I/O-Optimized + Savings Plan
+            io_sp_pricing = pricing_configs['io_optimized_sp'][aurora_engine]
+            acu_cost_io_sp = row['acu_usage'] * io_sp_pricing['acu'] * HOURS_PER_MONTH * multi_az_multiplier
+            storage_cost_io_sp = storage_gb * io_sp_pricing['storage']
+            df.loc[idx, 'aurora_io_optimized_sp_monthly'] = acu_cost_io_sp + storage_cost_io_sp
         
         # Calculate savings
         df['savings_standard'] = df['pricePerMonth'] - df['aurora_standard_monthly']
+        df['savings_standard_sp'] = df['pricePerMonth'] - df['aurora_standard_sp_monthly']
         df['savings_io_optimized'] = df['pricePerMonth'] - df['aurora_io_optimized_monthly']
-        df['savings_plan'] = df['pricePerMonth'] - df['aurora_savings_plan_monthly']
+        df['savings_io_optimized_sp'] = df['pricePerMonth'] - df['aurora_io_optimized_sp_monthly']
         
         # Determine best option
-        df['best_option'] = df[['aurora_standard_monthly', 'aurora_io_optimized_monthly', 
-                                'aurora_savings_plan_monthly']].idxmin(axis=1)
+        df['best_option'] = df[['aurora_standard_monthly', 'aurora_standard_sp_monthly',
+                                'aurora_io_optimized_monthly', 'aurora_io_optimized_sp_monthly']].idxmin(axis=1)
         df['best_option'] = df['best_option'].str.replace('aurora_', '').str.replace('_monthly', '')
-        df['max_savings'] = df[['savings_standard', 'savings_io_optimized', 'savings_plan']].max(axis=1)
+        df['max_savings'] = df[['savings_standard', 'savings_standard_sp', 
+                                'savings_io_optimized', 'savings_io_optimized_sp']].max(axis=1)
         
         return df
         
@@ -470,19 +526,29 @@ def main():
     print(f"\n{'=' * 60}")
     print(f"Results saved to: {output_file}")
     
+    # Filter for instances with positive savings
+    savings_df = combined_df[combined_df['max_savings'] > 0]
+    
     # Print summary
     print(f"\n{'SUMMARY':^60}")
     print("=" * 60)
     print(f"Total instances analyzed: {len(combined_df)}")
+    print(f"Instances with potential savings: {len(savings_df)}")
     print(f"Regions with instances: {combined_df['Region'].nunique()}")
     print(f"\nTotal current monthly cost: ${combined_df['pricePerMonth'].sum():,.2f}")
-    print(f"\nPotential monthly savings by option:")
-    print(f"  Standard:        ${combined_df['savings_standard'].sum():,.2f}")
-    print(f"  I/O-Optimized:   ${combined_df['savings_io_optimized'].sum():,.2f}")
-    print(f"  Savings Plan:    ${combined_df['savings_plan'].sum():,.2f}")
-    print(f"\nMaximum savings:   ${combined_df['max_savings'].sum():,.2f}")
-    print(f"\nBest option distribution:")
-    print(combined_df['best_option'].value_counts().to_string())
+    
+    if len(savings_df) > 0:
+        print(f"\nInstances with savings - current cost: ${savings_df['pricePerMonth'].sum():,.2f}")
+        print(f"\nPotential monthly savings by option:")
+        print(f"  Standard:              ${savings_df['savings_standard'].sum():,.2f}")
+        print(f"  Standard + SP:         ${savings_df['savings_standard_sp'].sum():,.2f}")
+        print(f"  I/O-Optimized:         ${savings_df['savings_io_optimized'].sum():,.2f}")
+        print(f"  I/O-Optimized + SP:    ${savings_df['savings_io_optimized_sp'].sum():,.2f}")
+        print(f"\nMaximum savings:         ${savings_df['max_savings'].sum():,.2f}")
+        print(f"\nBest option distribution:")
+        print(savings_df['best_option'].value_counts().to_string())
+    else:
+        print("\nNo instances would save money by migrating to Aurora Serverless v2")
     print("=" * 60)
 
 if __name__ == "__main__":
