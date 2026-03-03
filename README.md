@@ -63,14 +63,14 @@ Console summary shows:
 ### ACU sizing
 
 ```
-ACU = max(0.5, floor((CPU% / 100) × vCPU × 4 × 1.5) + 0.5)
+ACU = max(0, floor((CPU% / 100) × vCPU × 4 × 1.5) + 0.5)
 ```
 
 Where:
 - CPU% = 14-day average of hourly maximum CPU utilisation
 - 4 = ACUs per vCPU (1 ACU = 0.25 vCPU)
 - 1.5 = 50% headroom multiplier for peak usage
-- 0.5 = minimum ACU for Aurora Serverless v2
+- 0 = minimum ACU for Aurora Serverless v2
 
 ### I/O operations
 
@@ -114,26 +114,7 @@ Where:
 
 Aurora instances report `AllocatedStorage=1`. The script fetches actual storage from CloudWatch `VolumeBytesUsed` metric at cluster level.
 
-## Pricing models explained
-
-### Standard
-- ACU: On-demand hourly rate
-- I/O: $0.20 per million requests (region-dependent)
-- Storage: Standard Aurora storage pricing
-- Best for: Low I/O workloads
-
-### I/O-Optimised
-- ACU: Higher hourly rate (~36% more than Standard)
-- I/O: No charges
-- Storage: Higher storage rate (~15-20% more than Standard)
-- Best for: High I/O workloads (typically >15% of compute cost from I/O)
-
-### Savings Plan
-- ACU: 35% discount on Standard or I/O-Optimised rates
-- I/O: Same as base configuration
-- Storage: Same as base configuration
-- Commitment: 1-year $/hour commitment
-- Best for: Predictable workloads with cost optimisation priority
+Aurora storage is replicated across 3 AZs automatically and charged once, regardless of Single-AZ or Multi-AZ deployment.
 
 ## Version compatibility
 
@@ -211,8 +192,8 @@ Instances requiring upgrades are flagged in `NeedsUpgrade` column.
 
 - Assumes 1 ACU = 0.25 vCPU (4 ACU per vCPU)
 - Uses maximum CPU/IOPS from CloudWatch with 1.5× multiplier for headroom
-- Storage costs included: Standard vs I/O-Optimised pricing
-- Savings Plan discount: 35% applied to ACU costs only
+- I/O-Optimised: ~36% higher ACU rate, ~15-20% higher storage rate, no I/O charges
+- Savings Plan: 35% discount on ACU costs only, 1-year commitment
 - Version compatibility thresholds are hardcoded - update constants at top of script as AWS requirements change:
   - `AURORA_MYSQL_MIN_VERSION`
   - `AURORA_MYSQL_EXTENDED_SUPPORT`

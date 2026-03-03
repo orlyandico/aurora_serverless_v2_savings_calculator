@@ -438,9 +438,9 @@ def process_region(region: str) -> pd.DataFrame:
         
         # Calculate Aurora Serverless costs for all configurations
         # ACU usage = (CPU% / 100) × vCPU × ACU_PER_VCPU × HEADROOM_MULTIPLIER
-        # Minimum 0.5 ACU for Aurora Serverless v2
+        # Minimum 0 ACU for Aurora Serverless v2 (changed from 0.5)
         df['acu_usage'] = df['meanCPU'].fillna(0) * HEADROOM_MULTIPLIER * df['vcpu'] * ACU_PER_VCPU / 100
-        df['acu_usage'] = df['acu_usage'].apply(lambda x: max(0.5, np.floor(x) + 0.5))
+        df['acu_usage'] = df['acu_usage'].apply(lambda x: max(0, np.floor(x) + 0.5))
         
         # IOPS calculation: meanIOPS is already operations per second
         # Total monthly operations = IOPS × seconds per month × headroom
