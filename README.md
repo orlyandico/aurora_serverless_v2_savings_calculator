@@ -44,6 +44,94 @@ Console summary shows:
 - Potential savings by option (for profitable migrations only)
 - Best option distribution
 
+### Sample Run
+
+```
+% python3 aurora_serverlessv2_savings_calculator.py
+Aurora Serverless v2 Multi-Region Cost Calculator
+============================================================
+
+Found 17 AWS regions
+
+Analyzing region: ap-south-1
+  No qualifying instances found in ap-south-1
+
+Analyzing region: eu-north-1
+  No qualifying instances found in eu-north-1
+
+Analyzing region: eu-west-3
+  No qualifying instances found in eu-west-3
+
+Analyzing region: eu-west-2
+  Found 3 instances
+
+Analyzing region: eu-west-1
+  No qualifying instances found in eu-west-1
+
+Analyzing region: ap-northeast-3
+  No qualifying instances found in ap-northeast-3
+
+Analyzing region: ap-northeast-2
+  No qualifying instances found in ap-northeast-2
+
+Analyzing region: ap-northeast-1
+  No qualifying instances found in ap-northeast-1
+
+Analyzing region: ca-central-1
+  No qualifying instances found in ca-central-1
+
+Analyzing region: sa-east-1
+  No qualifying instances found in sa-east-1
+
+Analyzing region: ap-southeast-1
+  No qualifying instances found in ap-southeast-1
+
+Analyzing region: ap-southeast-2
+  No qualifying instances found in ap-southeast-2
+
+Analyzing region: eu-central-1
+  No qualifying instances found in eu-central-1
+
+Analyzing region: us-east-1
+  No qualifying instances found in us-east-1
+
+Analyzing region: us-east-2
+  No qualifying instances found in us-east-2
+
+Analyzing region: us-west-1
+  No qualifying instances found in us-west-1
+
+Analyzing region: us-west-2
+  No qualifying instances found in us-west-2
+
+============================================================
+Results saved to: aurora_serverless_analysis_20260303_135245.csv
+
+                          SUMMARY
+============================================================
+Total instances analyzed: 3
+Instances with potential savings: 2
+Regions with instances: 1
+
+Total current monthly cost: $419.02
+
+Instances with savings - current cost: $405.15
+
+Potential monthly savings by option:
+  Standard:              $163.41
+  Standard + SP:         $234.95
+  I/O-Optimized:         $127.75
+  I/O-Optimized + SP:    $224.84
+
+Maximum savings:         $260.43
+
+Best option distribution:
+best_option
+standard_sp        1
+io_optimized_sp    1
+============================================================
+```
+
 ## Calculations
 
 ### How it works
